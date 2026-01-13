@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+
+# Lock files intentionally ignored (sample repo)
+package-lock.json
+yarn.lock
+
+# Build output
+lib/
+dist/
+*.js
+*.js.map
+*.d.ts
+!jest.config.js
+!.eslintrc.js
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+pubsub-debug.log
+firebase-export-*
+.firebaserc
+.functions/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.runtimeconfig.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Linting 
+.eslintcache
