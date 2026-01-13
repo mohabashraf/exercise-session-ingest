@@ -1,0 +1,54 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "sessions",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "lastUpdated", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sessions",
+      "fields": [
+        { "fieldPath": "requiresReconciliation", "order": "ASCENDING" },
+        { "fieldPath": "lastUpdated", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sessions",
+      "fields": [
+        { "fieldPath": "requiresReconciliation", "order": "ASCENDING" },
+        { "fieldPath": "reconciliationReason", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "events",
+      "fields": [
+        { "fieldPath": "sessionId", "order": "ASCENDING" },
+        { "fieldPath": "eventSequence", "order": "ASCENDING" },
+        { "fieldPath": "clientTimestamp", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "events",
+      "fields": [
+        { "fieldPath": "sessionId", "order": "ASCENDING" },
+        { "fieldPath": "outOfOrder", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "metrics",
+      "fields": [
+        { "fieldPath": "date", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "idempotency",
+      "fieldPath": "expiresAt",
+      "ttl": true
+    }
+  ]
+}

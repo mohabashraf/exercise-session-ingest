@@ -1,16 +1,5 @@
-import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
-import { MetricsDashboardRequest } from './types';
 
-function createOnCallHandler<T, R>(
-  handler: (data: T, context: any) => Promise<R>
-) {
-  // In tests / non-Firebase environments, just return the handler directly
-  if (!functions?.https?.onCall) {
-    return handler;
-  }
-  return functions.https.onCall(handler);
-}
 
 export async function logMetrics(eventName: string, data: any): Promise<void> {
   try {
@@ -73,65 +62,3 @@ export async function logMetrics(eventName: string, data: any): Promise<void> {
     console.warn('Failed to log metrics:', error);
   }
 }
-
-// Dashboard API endpoints
-export const getMetricsDashboard = createOnCallHandler<MetricsDashboardRequest, any>(async (data, context) => {
-  const db = admin.firestore();
-
-  const { startDate, endDate } = data as MetricsDashboardRequest;
-  
-  const metricsQuery = db.collection('metrics')
-    .where('date', '>=', startDate)
-    .where('date', '<=', endDate)
-    .orderBy('date', 'desc')
-    .limit(30);
-
-  const snapshot = await metricsQuery.get();
-  
-  const metrics = await Promise.all(snapshot.docs.map(async (doc) => {
-    const data = doc.data();
-    
-    // Get user count from subcollection
-    const userCount = await doc.ref.collection('users').count().get();
-    
-    return {
-      date: data.date,
-      totalRequests: data.totals?.requests || 0,
-      uniqueUsers: userCount.data().count,
-      duplicateRate: data.totals?.requests > 0 
-        ? ((data.totals?.duplicates || 0) / data.totals.requests * 100)
-        : 0,
-      clockDriftRate: data.totals?.requests > 0
-        ? ((data.totals?.clockDrift || 0) / data.totals.requests * 100)
-        : 0,
-      outOfOrderRate: data.totals?.requests > 0
-        ? ((data.totals?.outOfOrder || 0) / data.totals.requests * 100)
-        : 0,
-      eventTypes: data.byEventType || {}
-    };
-  }));
-
-  // Get current system health
-  const activeSessionsCount = await db.collection('sessions')
-    .where('status', '==', 'active')
-    .count().get();
-
-  const pendingReconciliation = await db.collection('sessions')
-    .where('requiresReconciliation', '==', true)
-    .count().get();
-
-  return {
-    dailyMetrics: metrics,
-    systemHealth: {
-      activeSessions: activeSessionsCount.data().count,
-      pendingReconciliation: pendingReconciliation.data().count,
-      lastUpdated: new Date().toISOString()
-    },
-    alerts: {
-      highDuplicateRate: metrics.some(m => (m.duplicateRate) > 10),
-      highClockDrift: metrics.some(m => (m.clockDriftRate) > 5),
-      highOutOfOrder: metrics.some(m => (m.outOfOrderRate) > 15),
-      reconciliationBacklog: pendingReconciliation.data().count > 100
-    }
-  };
-});
