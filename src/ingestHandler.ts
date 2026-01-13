@@ -5,9 +5,16 @@ import { validatePayload } from './validators'
 import { IdempotencyService } from './idempotencyService';
 import { logMetrics } from './metrics';
 
-admin.initializeApp();
-const db = admin.firestore();
-const idempotencyService = new IdempotencyService(db);
+function getDb() {
+  if (!admin.apps || admin.apps.length === 0) {
+    admin.initializeApp();
+  }
+  return admin.firestore();
+}
+
+function getIdempotencyService() {
+  return new IdempotencyService(getDb());
+}
 
 export const ingestExerciseEvent = functions
   .runWith({ timeoutSeconds: 30, memory: '512MB' })
@@ -30,6 +37,7 @@ export const ingestExerciseEvent = functions
 
       // Process with idempotency (fail-closed)
       try {
+        const idempotencyService = getIdempotencyService();
         const result = await idempotencyService.processWithIdempotency(
           payload.idempotencyKey,
           payload,
@@ -65,6 +73,7 @@ export const ingestExerciseEvent = functions
   });
 
 async function processEvent(payload: IngestRequest): Promise<any> {
+  const db = getDb();
   const sessionRef = db.collection('sessions').doc(payload.sessionId);
   const eventRef = db.collection('events').doc(payload.eventId);
 
@@ -84,7 +93,9 @@ async function processEvent(payload: IngestRequest): Promise<any> {
       return { 
         status: 'already_processed', 
         sessionId: payload.sessionId,
-        warning: 'Event already processed with different idempotency key'
+        warning: 'Event already processed with different idempotency key',
+        outOfOrder: false,
+        requiresReconciliation: false
       };
     }
 
@@ -93,62 +104,89 @@ async function processEvent(payload: IngestRequest): Promise<any> {
     let isNewSession = false;
     let outOfOrder = false;
     
-    if (!sessionDoc.exists) {
-      if (payload.eventType !== 'start') {
-        throw new Error('Cannot create session without start event');
-      }
-      
-      session = createNewSession(payload);
-      isNewSession = true;
-      // Use set with merge: false - will fail at commit if exists
-      transaction.set(sessionRef, session, { merge: false });
-    } else {
-      session = sessionDoc.data() as ExerciseSession;
-      
-      // Check for out-of-order events
-      const eventTime = new Date(payload.timestamp);
-      
-      // Sequence-based out-of-order detection
-      if (payload.eventSequence && session.lastEventSequence) {
-        if (payload.eventSequence <= session.lastEventSequence) {
-          outOfOrder = true;
-          session.requiresReconciliation = true;
-          session.reconciliationReason = 'out_of_order';
-          console.warn(`Out-of-order event detected by sequence: ${payload.eventSequence} <= ${session.lastEventSequence}`);
-        }
-      }
-      
-      // Time-based out-of-order detection
-      if (session.lastEventTime && eventTime < new Date(session.lastEventTime)) {
-        outOfOrder = true;
-        session.requiresReconciliation = true;
-        session.reconciliationReason = 'out_of_order';
-        console.warn(`Out-of-order event detected by time: ${eventTime} < ${session.lastEventTime}`);
-      }
-      
-      // Update metrics only if not out of order
-      if (!outOfOrder) {
-        session = updateSessionMetrics(session, payload);
-      }
-      
-      // Always update tracking fields
-      session.lastEventSequence = Math.max(
-        session.lastEventSequence || 0,
-        payload.eventSequence || 0
-      );
-      
-      if (!session.lastEventTime || eventTime > new Date(session.lastEventTime)) {
-        session.lastEventTime = eventTime;
-      }
-      
-      transaction.set(sessionRef, session);
+    if (!sessionDoc.exists && payload.eventType !== 'start') {
+        throw new Error('Session does not exist');
     }
 
+    if (!sessionDoc.exists && payload.eventType === 'start') {
+      const fresh = createNewSession(payload);
+      try {
+        // Attempt first-writer create
+        transaction.create(sessionRef, fresh);
+        session = fresh;
+        isNewSession = true;
+      } catch (err: any) {
+        // Concurrent start: session was created by another transaction
+        if (err.message !== 'Document already exists') {
+          throw err;
+        }
+        const existing = await transaction.get(sessionRef);
+        session = existing.data() as ExerciseSession;
+        isNewSession = false;
+      }
+    }
+    else {
+      session = sessionDoc.data() as ExerciseSession;
+    }
+    
+    const eventTime = new Date(payload.timestamp);
+
+    const prevLastEventSequence = session.lastEventSequence ?? 0;
+    const prevLastEventTime = session.lastEventTime
+      ? new Date(session.lastEventTime)
+      : null;
+      
+    // Sequence-based out-of-order detection
+    if (
+      payload.eventType !== 'start' &&
+      payload.eventSequence !== undefined &&
+      payload.eventSequence < prevLastEventSequence
+    ) {
+      outOfOrder = true;
+      session.requiresReconciliation = true;
+      session.reconciliationReason = 'out_of_order';
+      console.warn(
+        `Out-of-order event detected by sequence: ${payload.eventSequence} < ${prevLastEventSequence}`
+      );
+    }
+    
+    // Time-based out-of-order detection
+    if (
+      payload.eventType !== 'start' &&
+      prevLastEventTime &&
+      eventTime < prevLastEventTime
+    ) {
+      outOfOrder = true;
+      session.requiresReconciliation = true;
+      session.reconciliationReason = 'out_of_order';
+      console.warn(
+        `Out-of-order event detected by time: ${eventTime} < ${prevLastEventTime}`
+      );
+    }
+    
+    // Update metrics unless strictly out-of-order non-start
+    if (!outOfOrder || payload.eventType === 'start') {
+      session = updateSessionMetrics(session, payload);
+    }
+    
+    // Always update tracking fields
+    session.lastEventSequence = Math.max(
+      prevLastEventSequence,
+      payload.eventSequence ?? 0
+    );
+    
+    if (!prevLastEventTime || eventTime > prevLastEventTime) {
+      session.lastEventTime = eventTime;
+    }
+    
     // Mark for reconciliation if clock drift detected
     if (payload._requiresReconciliation && !session.requiresReconciliation) {
       session.requiresReconciliation = true;
       session.reconciliationReason = 'clock_drift';
     }
+
+    transaction.set(sessionRef, session, { merge: true });
+    
 
     // Create event record
     const event: ExerciseEvent = {
@@ -179,7 +217,8 @@ async function processEvent(payload: IngestRequest): Promise<any> {
         avgHeartRate: session.metrics.heartRateAvg
       },
       requiresReconciliation: session.requiresReconciliation,
-      outOfOrder
+      outOfOrder,
+      isNewSession
     };
   });
 }
@@ -198,7 +237,7 @@ export function createNewSession(payload: IngestRequest): ExerciseSession {
     version: 1,
     metrics: {
       totalDuration: 0,
-      caloriesBurned: payload.metrics?.calories || 0,
+      caloriesBurned: 0,
       distance: payload.metrics?.distance || 0,
       heartRateAvg: payload.metrics?.heartRate,
       heartRateDataPoints: payload.metrics?.heartRate ? Math.max(payload.metrics?.duration || 1, 1) : 0

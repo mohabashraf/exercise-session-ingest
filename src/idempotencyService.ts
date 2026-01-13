@@ -78,20 +78,26 @@ export class IdempotencyService {
         const response = await processor();
         
         // Update with successful response
-        await docRef.update({
-          response,
-          status: 'completed',
-          completedAt: firestore.Timestamp.now()
-        });
+        await docRef.set(
+        {
+            response,
+            status: 'completed',
+            completedAt: firestore.Timestamp.now()
+        },
+        { merge: true }
+        );
         
         return { isNew: true, response };
       } catch (error) {
         // Update with failure
-        await docRef.update({
-          status: 'failed',
-          error: error instanceof Error ? error.message : 'Unknown error',
-          failedAt: firestore.Timestamp.now()
-        });
+            await docRef.set(
+            {
+                status: 'failed',
+                error: error instanceof Error ? error.message : 'Unknown error',
+                failedAt: firestore.Timestamp.now()
+            },
+            { merge: true }
+            );
         throw error;
       }
     } catch (error) {

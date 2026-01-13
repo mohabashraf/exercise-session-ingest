@@ -70,3 +70,8 @@ export interface IdempotencyRecord {
   processingStartedAt?: firestore.Timestamp;
   expiresAt: firestore.Timestamp;
 }
+
+export interface MetricsDashboardRequest {
+  startDate: string;
+  endDate: string;
+}
